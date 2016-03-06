@@ -38,6 +38,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class GroupMessengerActivity extends Activity {
     static final int SERVER_PORT = 10000;
     static final int[] PORTS_ALL = {11108, 11112, 11116, 11120, 11124};
+    static ArrayList<Integer> diededPorts = new ArrayList<Integer>();
+    static AtomicInteger mActiveNodes = new AtomicInteger(5);
     private final String TAG = "GroupMsgr";
     private String myPort;
     private ContentResolver mContentResolver;
@@ -198,14 +200,19 @@ public class GroupMessengerActivity extends Activity {
 
         private void sendMessage(Message receivedMessage, int port) {
             Socket socket = null;
-            try {
-                socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
-                        port);
-                ObjectOutputStream outStream = new ObjectOutputStream(socket.getOutputStream());
-                receivedMessage.setPort(myPort);
-                outStream.writeObject(receivedMessage);
-            } catch (IOException e) {
-                e.printStackTrace();
+            if(!diededPorts.contains(new Integer(port))) {
+                try {
+                    socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                            port);
+                    ObjectOutputStream outStream = new ObjectOutputStream(socket.getOutputStream());
+                    receivedMessage.setPort(myPort);
+                    outStream.writeObject(receivedMessage);
+                } catch (IOException e) {
+                    Log.e(TAG, port + " failed");
+                    diededPorts.add(new Integer(port));
+                    mActiveNodes.decrementAndGet();
+                    e.printStackTrace();
+                }
             }
         }
 
@@ -230,7 +237,7 @@ public class GroupMessengerActivity extends Activity {
                     retrieve.sequence = sequence;
                 }
                 retrieve.consensus++;
-                if (retrieve.consensus == 5) {
+                if (retrieve.consensus == mActiveNodes.get()) {
                     retrieve.type = Message.MessageType.AGREED_SEQ;
                     sendSeqAck(retrieve);
                 }
@@ -271,21 +278,27 @@ public class GroupMessengerActivity extends Activity {
 
         private void sendMessage(int i, String... msgs) {
             Socket socket = null;
-            try {
-                socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
-                        PORTS_ALL[i]);
-                String msgToSend = msgs[0];
-                OutputStream out = socket.getOutputStream();
-                ObjectOutputStream objStream = new ObjectOutputStream(out);
-                Message msg = new Message(Message.MessageType.MESSAGE, msgToSend, msgs[1], 0);
-                String key = new String(msg.pid + msg.message);
-                if (!messageHash.containsKey(key))
-                    messageHash.put(key, msg);
+            if (!diededPorts.contains(new Integer(PORTS_ALL[i]))) {
+                try {
+                    socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                            PORTS_ALL[i]);
+                    String msgToSend = msgs[0];
+                    OutputStream out = socket.getOutputStream();
+                    ObjectOutputStream objStream = new ObjectOutputStream(out);
 
-                objStream.writeObject(msg);
-                socket.close();
-            } catch (IOException e) {
-                e.printStackTrace();
+                    Message msg = new Message(Message.MessageType.MESSAGE, msgToSend, msgs[1], 0);
+                    String key = new String(msg.pid + msg.message);
+                    if (!messageHash.containsKey(key))
+                        messageHash.put(key, msg);
+
+                    objStream.writeObject(msg);
+                    socket.close();
+                } catch (IOException e) {
+                    Log.e(TAG, PORTS_ALL[i] + " failed");
+                    diededPorts.add(new Integer(PORTS_ALL[i]));
+                    mActiveNodes.decrementAndGet();
+                    e.printStackTrace();
+                }
             }
         }
     }
