@@ -122,9 +122,7 @@ public class GroupMessengerProvider extends ContentProvider {
                 return null;
             BufferedReader buf = new BufferedReader(new InputStreamReader(key_retrieve));
             String message = buf.readLine();
-            Log.v("query", "key " + selection + " value " + message);
             cursorBuilder = new MatrixHelper(new String[]{selection, message});
-            Log.v("query", "Built a cursor");
 
         } catch (FileNotFoundException e) {
             e.printStackTrace();

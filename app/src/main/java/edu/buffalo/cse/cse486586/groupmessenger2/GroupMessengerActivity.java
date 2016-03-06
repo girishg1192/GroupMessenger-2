@@ -28,6 +28,7 @@ import java.util.Collections;
 import java.util.PriorityQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * GroupMessengerActivity is the main Activity for the assignment.
@@ -42,7 +43,7 @@ public class GroupMessengerActivity extends Activity {
     private ContentResolver mContentResolver;
     private final Uri mUri;
     static int messageCount;
-    static int maxSequence;
+    static AtomicInteger maxSequence = new AtomicInteger();
     static int debug = 0;
     ConcurrentHashMap<String, Message> messageHash = new ConcurrentHashMap<String, Message>(50);
     PriorityQueue<Message> deliverableQueue = new PriorityQueue<Message>();
@@ -64,7 +65,7 @@ public class GroupMessengerActivity extends Activity {
         uriBuilder.scheme("content");
         mUri = uriBuilder.build();
         messageCount = 0;
-        maxSequence = 0;
+        maxSequence.set(0);
     }
 
     @Override
@@ -138,7 +139,6 @@ public class GroupMessengerActivity extends Activity {
             try {
                 do {
                     Socket clientHook = serverSocket.accept();
-                    Log.e(TAG, clientHook.getInetAddress().getHostName());
                     /*
                     BufferedReader reader = new BufferedReader(new InputStreamReader(clientHook.getInputStream()));
                     String message = reader.readLine();
@@ -154,7 +154,7 @@ public class GroupMessengerActivity extends Activity {
                             Log.e(TAG, "Already there");
 
                         receivedMessage.type = Message.MessageType.PROPOSED_SEQ;
-                        receivedMessage.sequence = maxSequence++;
+                        receivedMessage.sequence = maxSequence.incrementAndGet();
                         // Add to priority queue
                         deliverableQueue.add(receivedMessage);
 
@@ -171,14 +171,19 @@ public class GroupMessengerActivity extends Activity {
                         String key = new String(receivedMessage.pid + receivedMessage.message);
                         if (messageHash.containsKey(key)) {
                             Message retrieve = messageHash.remove(key);
-                            Log.v(TAG, "Dispatch " + retrieve.message);
-                            maxSequence = Math.max(maxSequence, retrieve.sequence);
+                            Log.v(TAG, "Dispatch " + receivedMessage.sequence);
+                            maxSequence.set(Math.max(maxSequence.get(), receivedMessage.sequence));
                             if (deliverableQueue.contains(retrieve)) {
                                 deliverableQueue.remove(retrieve);
+                                retrieve.sequence = receivedMessage.sequence;
                                 retrieve.agreed = true;
                                 deliverableQueue.add(retrieve);
+                                while (deliverableQueue.peek() != null && deliverableQueue.peek().agreed) {
+                                    Log.e(TAG, "Deliver " + deliverableQueue.peek().message);
+//                                    deliverMessage(deliverableQueue.poll().message);
+                                    publishProgress(deliverableQueue.poll());
+                                }
                             }
-                            publishProgress(receivedMessage);
                         }
                     }
                     clientHook.close();
@@ -227,32 +232,17 @@ public class GroupMessengerActivity extends Activity {
                 retrieve.consensus++;
                 if (retrieve.consensus == 5) {
                     retrieve.type = Message.MessageType.AGREED_SEQ;
-                    /*new Thread(new Runnable() {
-                        @Override
-                        public void run() {*/
                     sendSeqAck(retrieve);
-          /*              }
-                    }).start();*/
                 }
                 messageHash.put(key, retrieve);
 
                 access.release();
             }
-/*            else{
-                receivedMessage.consensus++;
-                messageHash.put(key, receivedMessage);
-            }*/
+
         }
 
         protected void onProgressUpdate(Message... receivedMessage) {
-            if (receivedMessage[0].type == Message.MessageType.PROPOSED_SEQ) {
-                proposedSequence(receivedMessage[0]);
-            }
-            if (receivedMessage[0].type == Message.MessageType.AGREED_SEQ) {
-                if (deliverableQueue.peek() != null && deliverableQueue.peek().agreed) {
-                    deliverMessage(deliverableQueue.poll().message);
-                }
-            }
+            deliverMessage(receivedMessage[0].message);
         }
 
 
