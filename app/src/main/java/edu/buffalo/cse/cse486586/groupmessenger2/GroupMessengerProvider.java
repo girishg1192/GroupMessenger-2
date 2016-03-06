@@ -61,7 +61,6 @@ public class GroupMessengerProvider extends ContentProvider {
     @Override
     public Uri insert(Uri uri, ContentValues values) {
         /*
-         * TODO: You need to implement this method. Note that values will have two columns (a key
          * column and a value column) and one row that contains the actual (key, value) pair to be
          * inserted.
          * 
