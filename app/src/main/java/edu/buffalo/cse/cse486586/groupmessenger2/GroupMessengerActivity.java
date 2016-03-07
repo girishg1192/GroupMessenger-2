@@ -19,14 +19,15 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.OutputStream;
-import java.io.Serializable;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -46,18 +47,22 @@ public class GroupMessengerActivity extends Activity {
     private final Uri mUri;
     static int messageCount;
     static AtomicInteger maxSequence = new AtomicInteger();
-    static int debug = 0;
     ConcurrentHashMap<String, Message> messageHash = new ConcurrentHashMap<String, Message>(50);
-    PriorityQueue<Message> deliverableQueue = new PriorityQueue<Message>();
+    PriorityBlockingQueue<Message> deliverableQueue = new PriorityBlockingQueue<Message>();
     Semaphore access = new Semaphore(2);
 
     private class MessagePriority {
         Message message;
-        ArrayList proposedSequence;
+        ArrayList<Integer> proposedSequence;
 
         MessagePriority(Message msg) {
             message = new Message(msg);
-            proposedSequence = (ArrayList) Collections.synchronizedList(new ArrayList<Integer>());
+            proposedSequence = new ArrayList<Integer>();
+            for (int i = 0; i < 5; i++) {
+                if (!diededPorts.contains(Integer.valueOf(PORTS_ALL[i]))) {
+                    proposedSequence.add(PORTS_ALL[i]);
+                }
+            }
         }
     }
 
@@ -146,44 +151,47 @@ public class GroupMessengerActivity extends Activity {
                     String message = reader.readLine();
                     */
                     ObjectInputStream objStream = new ObjectInputStream(clientHook.getInputStream());
-                    final Message receivedMessage = (Message) objStream.readObject();
+                    Message receivedMessage = (Message) objStream.readObject();
+                    if (receivedMessage != null) {
+                        if (receivedMessage.type == Message.MessageType.MESSAGE) {
+                            String key = receivedMessage.pid + receivedMessage.message;
+                            if (!messageHash.containsKey(key)) {
+                                messageHash.put(key, receivedMessage);
+                            } else
+                                Log.e(TAG, "Already there");
 
-                    if (receivedMessage.type == Message.MessageType.MESSAGE) {
-                        String key = receivedMessage.pid + receivedMessage.message;
-                        if (!messageHash.containsKey(key)) {
-                            messageHash.put(key, receivedMessage);
-                        } else
-                            Log.e(TAG, "Already there");
+                            deliverableQueue.add(receivedMessage);
+                            final Message sendProposed = new Message(receivedMessage);
 
-                        receivedMessage.type = Message.MessageType.PROPOSED_SEQ;
-                        receivedMessage.sequence = maxSequence.incrementAndGet();
-                        // Add to priority queue
-                        deliverableQueue.add(receivedMessage);
-
-                        Thread sendProposedSeq = new Thread(new Runnable() {
-                            @Override
-                            public void run() {
-                                sendMessage(receivedMessage, receivedMessage.port);
-                            }
-                        });
-                        sendProposedSeq.start();
-                    } else if (receivedMessage.type == Message.MessageType.PROPOSED_SEQ) {
-                        proposedSequence(receivedMessage);
-                    } else if (receivedMessage.type == Message.MessageType.AGREED_SEQ) {
-                        String key = new String(receivedMessage.pid + receivedMessage.message);
-                        if (messageHash.containsKey(key)) {
-                            Message retrieve = messageHash.remove(key);
-                            Log.v(TAG, "Dispatch " + receivedMessage.sequence);
-                            maxSequence.set(Math.max(maxSequence.get(), receivedMessage.sequence));
-                            if (deliverableQueue.contains(retrieve)) {
-                                deliverableQueue.remove(retrieve);
-                                retrieve.sequence = receivedMessage.sequence;
-                                retrieve.agreed = true;
-                                deliverableQueue.add(retrieve);
-                                while (deliverableQueue.peek() != null && deliverableQueue.peek().agreed) {
-                                    Log.e(TAG, "Deliver " + deliverableQueue.peek().message);
+                            sendProposed.type = Message.MessageType.PROPOSED_SEQ;
+                            sendProposed.sequence = maxSequence.incrementAndGet();
+                            receivedMessage.print();
+                            // Add to priority queue
+                            Thread sendProposedSeq = new Thread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    sendMessage(sendProposed, sendProposed.port);
+                                }
+                            });
+                            sendProposedSeq.start();
+                        } else if (receivedMessage.type == Message.MessageType.PROPOSED_SEQ) {
+                            proposedSequence(receivedMessage);
+                        } else if (receivedMessage.type == Message.MessageType.AGREED_SEQ) {
+                            String key = receivedMessage.pid + receivedMessage.message;
+                            if (messageHash.containsKey(key)) {
+                                Message retrieve = messageHash.remove(key);
+                                Log.v(TAG, "Dispatch " + receivedMessage.sequence);
+                                maxSequence.set(Math.max(maxSequence.get(), receivedMessage.sequence));
+                                if (deliverableQueue.contains(retrieve)) {
+                                    deliverableQueue.remove(retrieve);
+                                    retrieve.sequence = receivedMessage.sequence;
+                                    retrieve.agreed = true;
+                                    deliverableQueue.add(retrieve);
+                                    while (deliverableQueue.peek() != null && deliverableQueue.peek().agreed) {
+                                        Log.e(TAG, "Deliver " + deliverableQueue.peek().message);
 //                                    deliverMessage(deliverableQueue.poll().message);
-                                    publishProgress(deliverableQueue.poll());
+                                        publishProgress(deliverableQueue.poll());
+                                    }
                                 }
                             }
                         }
@@ -198,33 +206,10 @@ public class GroupMessengerActivity extends Activity {
             return null;
         }
 
-        private void sendMessage(Message receivedMessage, int port) {
-            Socket socket = null;
-            if(!diededPorts.contains(new Integer(port))) {
-                try {
-                    socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
-                            port);
-                    ObjectOutputStream outStream = new ObjectOutputStream(socket.getOutputStream());
-                    receivedMessage.setPort(myPort);
-                    outStream.writeObject(receivedMessage);
-                } catch (IOException e) {
-                    Log.e(TAG, port + " failed");
-                    diededPorts.add(new Integer(port));
-                    mActiveNodes.decrementAndGet();
-                    e.printStackTrace();
-                }
-            }
-        }
-
-        private void sendSeqAck(Message receivedMessage) {
-            for (int i = 0; i < 5; i++) {
-                sendMessage(receivedMessage, PORTS_ALL[i]);
-            }
-        }
 
         private void proposedSequence(Message receivedMessage) {
 
-            String key = new String(receivedMessage.pid + receivedMessage.message);
+            String key = receivedMessage.pid + receivedMessage.message;
             int sequence = receivedMessage.sequence;
             if (messageHash.containsKey(key)) {
                 try {
@@ -237,6 +222,7 @@ public class GroupMessengerActivity extends Activity {
                     retrieve.sequence = sequence;
                 }
                 retrieve.consensus++;
+                retrieve.totalConsensus&=~(1<<receivedMessage.pid);
                 if (retrieve.consensus == mActiveNodes.get()) {
                     retrieve.type = Message.MessageType.AGREED_SEQ;
                     sendSeqAck(retrieve);
@@ -287,7 +273,7 @@ public class GroupMessengerActivity extends Activity {
                     ObjectOutputStream objStream = new ObjectOutputStream(out);
 
                     Message msg = new Message(Message.MessageType.MESSAGE, msgToSend, msgs[1], 0);
-                    String key = new String(msg.pid + msg.message);
+                    String key = msg.pid + msg.message;
                     if (!messageHash.containsKey(key))
                         messageHash.put(key, msg);
 
@@ -295,11 +281,88 @@ public class GroupMessengerActivity extends Activity {
                     socket.close();
                 } catch (IOException e) {
                     Log.e(TAG, PORTS_ALL[i] + " failed");
-                    diededPorts.add(new Integer(PORTS_ALL[i]));
+                    diededPorts.add(PORTS_ALL[i]);
                     mActiveNodes.decrementAndGet();
+                    handleFailure(PORTS_ALL[i]);
                     e.printStackTrace();
                 }
             }
         }
     }
+
+    private void handleFailure(int port) {
+        try {
+            access.acquire();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        Log.e(TAG, "______FAILURE_______");
+        for (Map.Entry<String, Message> iter : messageHash.entrySet()) {
+            Message msg = iter.getValue();
+            int pid = (port-11108)/4;
+            if ((msg.totalConsensus&(1<<pid))!=0) {
+                Log.e(TAG, "waiting for dead process");
+                msg.print();
+                if(msg.consensus == mActiveNodes.get()) {
+                    msg.agreed = true;
+                    msg.type = Message.MessageType.AGREED_SEQ;
+                    sendSeqAck(msg);
+                }
+                else{
+                    msg.consensus++;
+                    msg.totalConsensus&=~(1<<pid);
+                }
+                messageHash.put(iter.getKey(), msg);
+            }
+            Log.e(TAG, msg.message + " " + msg.consensus + " " + msg.port);
+            if (msg.port == port) {
+                msg.agreed = true;
+                //messageHash.put(iter.getKey(), msg);
+//                msg.type = Message.MessageType.AGREED_SEQ;
+                deliverableQueue.remove(msg);
+//                sendSeqAck(msg);
+            }
+        }
+        Log.e(TAG, "-----deliverable queue-----");
+        Iterator<Message>de = deliverableQueue.iterator();
+        while(de.hasNext()){
+            de.next().print();
+        }
+/*        Iterator<Message> iter= deliverableQueue.iterator();
+        while(iter.hasNext()){
+            Message tmp = iter.next();
+            if(tmp.port == port)
+                tmp.agreed = true;
+            deliverableQueue.remove(tmp);
+            deliverableQueue.add(tmp);
+        }*/
+        Log.e(TAG, "______________END___________");
+        access.release();
+    }
+
+    private void sendSeqAck(Message receivedMessage) {
+        for (int i = 0; i < 5; i++) {
+            sendMessage(receivedMessage, PORTS_ALL[i]);
+        }
+    }
+
+    private void sendMessage(Message receivedMessage, int port) {
+        Socket socket = null;
+        if (!diededPorts.contains(Integer.valueOf(port))) {
+            try {
+                socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                        port);
+                ObjectOutputStream outStream = new ObjectOutputStream(socket.getOutputStream());
+                receivedMessage.setPort(myPort);
+                outStream.writeObject(receivedMessage);
+            } catch (IOException e) {
+                Log.e(TAG, port + " failed");
+                diededPorts.add(Integer.valueOf(port));
+                mActiveNodes.decrementAndGet();
+                handleFailure(port);
+                e.printStackTrace();
+            }
+        }
+    }
 }
+
