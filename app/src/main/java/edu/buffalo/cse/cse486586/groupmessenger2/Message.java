@@ -35,22 +35,28 @@ public class Message implements Serializable, Comparable {
     boolean agreed;
     public int totalConsensus;
 
-    public Message(MessageType type_, String message_, String port_, int consensus){
+    public Message(){
+        port = 2;
+    }
+    public Message(MessageType type_, String message_, String port_, int consensus, int sequence){
         type = type_;
         message = new String(message_);
         pid = portToPid(port_);
         port = Integer.parseInt(port_);
         this.consensus = consensus;
         agreed = false;
-        totalConsensus = 11111;
+        totalConsensus = (1<<5)-1;
+        this.sequence = sequence;
     }
     public Message(Message copy){
+        this.type = copy.type;
         message = new String(copy.message);
         sequence = copy.sequence;
         pid = copy.pid;
-        consensus = copy.consensus;
         port = copy.port;
+        consensus = copy.consensus;
         totalConsensus = copy.totalConsensus;
+        this.agreed = copy.agreed;
     }
     public void print(){
         Log.e("Message", this.type + "<type" + "seq:" + sequence + "\nconsensus> " + this.consensus + "\nPort:" + this.port + ", " + this.message);
