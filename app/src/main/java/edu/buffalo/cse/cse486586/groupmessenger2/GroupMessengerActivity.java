@@ -97,7 +97,7 @@ public class GroupMessengerActivity extends Activity {
             public void run() {
                 sendHeartBeat();
             }
-        }, 8, 5, TimeUnit.SECONDS);
+        }, 8, 2, TimeUnit.SECONDS);
 //        pingAck.scheduleAtFixedRate(new Runnable() {
 //            @Override
 //            public void run() {
@@ -177,6 +177,7 @@ public class GroupMessengerActivity extends Activity {
                             Log.e(TAG, "Received message port " + receivedMessage.port);
                             if (!diededPorts.contains(new Integer(receivedMessage.port))) {
                                 String key = receivedMessage.pid + receivedMessage.message;
+//                                receivedMessage.sequence = Math.max(maxSequence.get(), receivedMessage.sequence);
                                 if (!messageHash.containsKey(key)) {
                                     messageHash.put(key, receivedMessage);
                                 } else
@@ -185,7 +186,6 @@ public class GroupMessengerActivity extends Activity {
                                 access.acquire();
                                 if (!deliverableQueue.contains(receivedMessage)) {
                                     //TODO Changed ordering
-                                    receivedMessage.sequence = maxSequence.get();
                                     deliverableQueue.add(receivedMessage);
                                 }
                                 access.release();
@@ -262,7 +262,10 @@ public class GroupMessengerActivity extends Activity {
                 retrieve.totalConsensus &= ~(1 << receivedMessage.pid);
                 deliverableQueue.remove(retrieve);
                 deliverableQueue.add(retrieve);
-                if (retrieve.consensus >= mActiveNodes.get()) {
+                Log.e(TAG, "_--------------Proposed----------");
+                retrieve.print();
+                Log.e(TAG, "----------------Proposed End-----------");
+                if (retrieve.consensus >= mActiveNodes.get() && retrieve.type!= Message.MessageType.AGREED_SEQ) {
                     retrieve.type = Message.MessageType.AGREED_SEQ;
                     Log.e(TAG, "---- Agreed sequence ----");
                     retrieve.print();
@@ -367,7 +370,7 @@ public class GroupMessengerActivity extends Activity {
                 }
                 messageHash.put(iter.getKey(), msg);
             }
-            if (msg.consensus == mActiveNodes.get()) {
+            if (msg.consensus == mActiveNodes.get() && msg.type!= Message.MessageType.AGREED_SEQ) {
                 msg.type = Message.MessageType.AGREED_SEQ;
                 final Message send = new Message(msg);
                 Thread sendProposedSeq = new Thread(new Runnable() {
