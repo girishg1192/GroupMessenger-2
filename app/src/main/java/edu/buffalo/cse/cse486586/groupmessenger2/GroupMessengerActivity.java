@@ -158,13 +158,13 @@ public class GroupMessengerActivity extends Activity {
             ServerSocket serverSocket = sockets[0];
             do {
                 try {
-                    access.acquire();
+/*                    access.acquire();
                     if (deliver.getAndSet(false))
                         while (deliverableQueue.peek() != null && deliverableQueue.peek().agreed) {
                             Log.e(TAG, "Deliver preempt " + deliverableQueue.peek().message);
                             publishProgress(deliverableQueue.poll());
                         }
-                    access.release();
+                    access.release();*/
                     Socket clientHook = serverSocket.accept();
                     /*
                     BufferedReader reader = new BufferedReader(new InputStreamReader(clientHook.getInputStream()));
@@ -248,7 +248,7 @@ public class GroupMessengerActivity extends Activity {
         private void proposedSequence(Message receivedMessage) {
             String key = receivedMessage.pid + receivedMessage.message;
             int sequence = receivedMessage.sequence;
-            if (messageHash.containsKey(key)) {
+            if (messageHash.containsKey(key) && messageHash.get(key).consensus < mActiveNodes.get()) {
                 try {
                     access.acquire();
                 } catch (InterruptedException e) {
@@ -320,6 +320,8 @@ public class GroupMessengerActivity extends Activity {
                     access.acquire();
                     if (!messageHash.containsKey(key))
                         messageHash.put(key, msg);
+                    if(!deliverableQueue.contains(msg))
+                        deliverableQueue.add(msg);
                     access.release();
 
                     objStream.writeObject(msg);
@@ -349,8 +351,12 @@ public class GroupMessengerActivity extends Activity {
             Message msg = iter.getValue();
             int pid = (port - 11108) / 4;
             if (msg.port == port) {
+                msg.agreed = true;
                 deliverableQueue.remove(msg);
-                messageHash.remove(iter.getKey());
+                deliverableQueue.add(msg);
+                messageHash.put(iter.getKey(), msg);
+//                deliverableQueue.remove(msg);
+//                messageHash.remove(iter.getKey());
             } else if ((msg.totalConsensus & (1 << pid)) != 0 &&msg.port==Integer.parseInt(myPort)) {
                 Log.e(TAG, "waiting for dead process");
                 msg.print();
