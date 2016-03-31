@@ -65,8 +65,9 @@ public class Message implements Serializable, Comparable {
         int pid = ((Integer.parseInt(port)) - 11108)/4;
         return pid;
     }
-    public void setPort(String port){
-        this.port = Integer.parseInt(port);
+    public void setPort(String port_){
+        int port = Integer.parseInt(port_);
+        this.port = port;
+//        pid = portToPid(port_);
     }
-
 }

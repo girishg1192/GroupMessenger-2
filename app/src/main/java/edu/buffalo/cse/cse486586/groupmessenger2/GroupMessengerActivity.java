@@ -53,7 +53,7 @@ public class GroupMessengerActivity extends Activity {
     ConcurrentHashMap<String, Message> messageHash = new ConcurrentHashMap<String, Message>(50);
     PriorityBlockingQueue<Message> deliverableQueue = new PriorityBlockingQueue<Message>();
     Semaphore access = new Semaphore(2);
-    AtomicBoolean deliver = new AtomicBoolean(false);
+    AtomicBoolean deliver = new AtomicBoolean(true);
     private final ScheduledExecutorService pingAck = Executors.newScheduledThreadPool(2);
     ScheduledFuture<?> pingAckHandle = null;
 
@@ -77,7 +77,7 @@ public class GroupMessengerActivity extends Activity {
 
         findViewById(R.id.button1).setOnClickListener(
                 new OnPTestClickListener(tv, getContentResolver()));
-        
+
         TelephonyManager tel = (TelephonyManager) this.getSystemService(Context.TELEPHONY_SERVICE);
         Log.v(TAG, tel.getLine1Number());
         String portStr = tel.getLine1Number().substring(tel.getLine1Number().length() - 4);
@@ -97,7 +97,7 @@ public class GroupMessengerActivity extends Activity {
             public void run() {
                 sendHeartBeat();
             }
-        }, 8, 2, TimeUnit.SECONDS);
+        }, 10, 2, TimeUnit.SECONDS);
 //        pingAck.scheduleAtFixedRate(new Runnable() {
 //            @Override
 //            public void run() {
@@ -130,10 +130,11 @@ public class GroupMessengerActivity extends Activity {
             Log.v(TAG, msg);
         }
     }
-    public void sendHeartBeat(){
-        Socket socket = null;
+
+    public void sendHeartBeat() {
+        Socket socket;
         Message check = new Message();
-        int i=0;
+        int i = 0;
         if (diededPorts.isEmpty()) {
             try {
                 for (i = 0; i < 5; i++) {
@@ -144,10 +145,12 @@ public class GroupMessengerActivity extends Activity {
                 }
             } catch (IOException e) {
                 Log.e(TAG, PORTS_ALL[i] + " failed");
-                diededPorts.add(Integer.valueOf(PORTS_ALL[i]));
-                mActiveNodes.decrementAndGet();
-                handleFailure(PORTS_ALL[i]);
-                e.printStackTrace();
+                if (deliver.getAndSet(false)) {
+                    diededPorts.add(Integer.valueOf(PORTS_ALL[i]));
+                    mActiveNodes.decrementAndGet();
+                    handleFailure(PORTS_ALL[i]);
+                    e.printStackTrace();
+                }
             }
         }
     }
@@ -158,26 +161,21 @@ public class GroupMessengerActivity extends Activity {
             ServerSocket serverSocket = sockets[0];
             do {
                 try {
-/*                    access.acquire();
-                    if (deliver.getAndSet(false))
-                        while (deliverableQueue.peek() != null && deliverableQueue.peek().agreed) {
-                            Log.e(TAG, "Deliver preempt " + deliverableQueue.peek().message);
-                            publishProgress(deliverableQueue.poll());
-                        }
-                    access.release();*/
+
+                    while (deliverableQueue.peek() != null && deliverableQueue.peek().agreed) {
+                        Log.e(TAG, "Deliver " + deliverableQueue.peek().message);
+                        publishProgress(deliverableQueue.poll());
+                    }
+
                     Socket clientHook = serverSocket.accept();
-                    /*
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(clientHook.getInputStream()));
-                    String message = reader.readLine();
-                    */
+
                     ObjectInputStream objStream = new ObjectInputStream(clientHook.getInputStream());
                     Message receivedMessage = (Message) objStream.readObject();
-                    if (receivedMessage != null && receivedMessage.port!=2) {
+                    if (receivedMessage != null && receivedMessage.port != 2) {
                         if (receivedMessage.type == Message.MessageType.MESSAGE) {
                             Log.e(TAG, "Received message port " + receivedMessage.port);
                             if (!diededPorts.contains(new Integer(receivedMessage.port))) {
                                 String key = receivedMessage.pid + receivedMessage.message;
-//                                receivedMessage.sequence = Math.max(maxSequence.get(), receivedMessage.sequence);
                                 if (!messageHash.containsKey(key)) {
                                     messageHash.put(key, receivedMessage);
                                 } else
@@ -207,17 +205,20 @@ public class GroupMessengerActivity extends Activity {
                             proposedSequence(receivedMessage);
                         } else if (receivedMessage.type == Message.MessageType.AGREED_SEQ) {
                             String key = receivedMessage.pid + receivedMessage.message;
+
+                            Log.v(TAG, "Dispatch " + receivedMessage.sequence + " " + receivedMessage.message);
                             if (messageHash.containsKey(key)) {
                                 Message retrieve = messageHash.remove(key);
-                                Log.v(TAG, "Dispatch " + receivedMessage.sequence + " " + receivedMessage.message);
                                 maxSequence.set(Math.max(maxSequence.get(), receivedMessage.sequence));
                                 access.acquire();
+                                Log.v(TAG, "Dispatch " + receivedMessage.sequence + " " + receivedMessage.message);
                                 if (deliverableQueue.peek() != null)
-                                    Log.e(TAG, "Waiting for :" + deliverableQueue.peek().message + " " + deliverableQueue.peek().sequence);
+                                    Log.e(TAG, "Waiting for :" + deliverableQueue.peek().message + " " + deliverableQueue.peek().sequence +
+                                            " " + deliverableQueue.peek().agreed + " " + deliverableQueue.peek().port);
                                 if (deliverableQueue.contains(retrieve)) {
-                                    deliverableQueue.remove(retrieve);
                                     retrieve.sequence = receivedMessage.sequence;
                                     retrieve.agreed = true;
+                                    deliverableQueue.remove(retrieve);
                                     deliverableQueue.add(retrieve);
                                     while (deliverableQueue.peek() != null && deliverableQueue.peek().agreed) {
                                         Log.e(TAG, "Deliver " + deliverableQueue.peek().message);
@@ -248,34 +249,44 @@ public class GroupMessengerActivity extends Activity {
         private void proposedSequence(Message receivedMessage) {
             String key = receivedMessage.pid + receivedMessage.message;
             int sequence = receivedMessage.sequence;
-            if (messageHash.containsKey(key) && messageHash.get(key).consensus < mActiveNodes.get()) {
-                try {
-                    access.acquire();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
+            try {
+                access.acquire();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            if (messageHash.containsKey(key) && messageHash.get(key).type != Message.MessageType.AGREED_SEQ) {
+
                 Message retrieve = messageHash.get(key);
                 if (retrieve.sequence < sequence) {
                     retrieve.sequence = sequence;
                 }
                 retrieve.consensus++;
-                retrieve.totalConsensus &= ~(1 << receivedMessage.pid);
-                deliverableQueue.remove(retrieve);
-                deliverableQueue.add(retrieve);
-                Log.e(TAG, "_--------------Proposed----------");
+                int pid = (receivedMessage.port - 11108)/4;
+                retrieve.totalConsensus &= ~(1 << pid);
+
+                Log.e(TAG, pid + "_---------------Proposed---------------_" + receivedMessage.port);
                 retrieve.print();
-                Log.e(TAG, "----------------Proposed End-----------");
-                if (retrieve.consensus >= mActiveNodes.get() && retrieve.type!= Message.MessageType.AGREED_SEQ) {
+                Log.e(TAG, receivedMessage.pid + "----------------Proposed End-----------" + retrieve.totalConsensus);
+                //TODO change failure handler code
+                if (retrieve.consensus >= mActiveNodes.get() && retrieve.type != Message.MessageType.AGREED_SEQ) {
                     retrieve.type = Message.MessageType.AGREED_SEQ;
                     Log.e(TAG, "---- Agreed sequence ----");
                     retrieve.print();
+                    final Message send = new Message(retrieve);
+                    Thread sendProposedSeq = new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            sendSeqAck(send);
+                        }
+                    });
+                    sendProposedSeq.start();
                     Log.e(TAG, "--------end--------");
-                    sendSeqAck(retrieve);
                 }
+                deliverableQueue.remove(retrieve);
+                deliverableQueue.add(retrieve);
                 messageHash.put(key, retrieve);
-                access.release();
             }
-
+            access.release();
         }
 
         protected void onProgressUpdate(Message... receivedMessage) {
@@ -320,7 +331,7 @@ public class GroupMessengerActivity extends Activity {
                     access.acquire();
                     if (!messageHash.containsKey(key))
                         messageHash.put(key, msg);
-                    if(!deliverableQueue.contains(msg))
+                    if (!deliverableQueue.contains(msg))
                         deliverableQueue.add(msg);
                     access.release();
 
@@ -328,10 +339,12 @@ public class GroupMessengerActivity extends Activity {
                     socket.close();
                 } catch (IOException e) {
                     Log.e(TAG, PORTS_ALL[i] + " failed");
-                    diededPorts.add(PORTS_ALL[i]);
-                    mActiveNodes.decrementAndGet();
-                    handleFailure(PORTS_ALL[i]);
-                    e.printStackTrace();
+                    if (deliver.getAndSet(false)) {
+                        diededPorts.add(PORTS_ALL[i]);
+                        mActiveNodes.decrementAndGet();
+                        handleFailure(PORTS_ALL[i]);
+                        e.printStackTrace();
+                    }
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
@@ -345,8 +358,8 @@ public class GroupMessengerActivity extends Activity {
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-        pingAckHandle.cancel(true);
-        Log.e(TAG, "______FAILURE_______");
+//        pingAckHandle.cancel(true);
+        Log.e(TAG, "______FAILURE_______" + port);
         for (Map.Entry<String, Message> iter : messageHash.entrySet()) {
             Message msg = iter.getValue();
             int pid = (port - 11108) / 4;
@@ -357,7 +370,7 @@ public class GroupMessengerActivity extends Activity {
                 messageHash.put(iter.getKey(), msg);
 //                deliverableQueue.remove(msg);
 //                messageHash.remove(iter.getKey());
-            } else if ((msg.totalConsensus & (1 << pid)) != 0 &&msg.port==Integer.parseInt(myPort)) {
+            } else if ((msg.totalConsensus & (1 << pid)) != 0 && msg.port == Integer.parseInt(myPort)) {
                 Log.e(TAG, "waiting for dead process");
                 msg.print();
                 if (msg.consensus == mActiveNodes.get()) {
@@ -371,26 +384,26 @@ public class GroupMessengerActivity extends Activity {
                     });
                     sendProposedSeq.start();
                 } else {
-                    msg.consensus++;
                     msg.totalConsensus &= ~(1 << pid);
                 }
                 messageHash.put(iter.getKey(), msg);
-            }
-            if (msg.consensus == mActiveNodes.get() && msg.type!= Message.MessageType.AGREED_SEQ) {
-                msg.type = Message.MessageType.AGREED_SEQ;
-                final Message send = new Message(msg);
-                Thread sendProposedSeq = new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        sendSeqAck(send);
-                    }
-                });
-                sendProposedSeq.start();
+            } else if ((msg.totalConsensus & (1 << pid)) == 0 && msg.consensus <= mActiveNodes.get()) {
+                msg.consensus--;
+                messageHash.put(iter.getKey(), msg);
             }
         }
+        //In case AVD dies after everything is done
+        // Send message to server task?
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                while (deliverableQueue.peek() != null && deliverableQueue.peek().agreed) {
+                    Log.e(TAG, "Deliver from Runnable" + deliverableQueue.peek().message);
+                    deliverMessage(deliverableQueue.poll().message);
+                }
+            }
+        });
 
-        if (deliverableQueue.peek() != null && deliverableQueue.peek().agreed)
-            deliver.set(true);
 
         Log.e(TAG, "______________END___________");
         access.release();
@@ -413,25 +426,14 @@ public class GroupMessengerActivity extends Activity {
                 outStream.writeObject(receivedMessage);
             } catch (IOException e) {
                 Log.e(TAG, port + " failed");
-                diededPorts.add(port);
-                mActiveNodes.decrementAndGet();
-                handleFailure(port);
-                e.printStackTrace();
+                if (deliver.getAndSet(false)) {
+                    diededPorts.add(port);
+                    mActiveNodes.decrementAndGet();
+                    handleFailure(port);
+                    e.printStackTrace();
+                }
             }
         }
-    }
-    private void deliverQueued(){
-        try {
-            access.acquire();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-        Log.e("TIME", "TimedTask");
-        while (deliverableQueue.peek() != null && deliverableQueue.peek().agreed) {
-                Log.e(TAG, "Deliver preempt " + deliverableQueue.peek().message);
-                deliverMessage(deliverableQueue.poll().message);
-            }
-        access.release();
     }
 }
 
